@@ -37,7 +37,7 @@ def main():
     data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model)
 
     training_args = Seq2SeqTrainingArguments(
-        output_dir="./results",
+        output_dir="./models",
         evaluation_strategy="epoch",
         learning_rate=2e-5,
         per_device_train_batch_size=16,
