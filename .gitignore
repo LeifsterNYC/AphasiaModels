@@ -1,3 +1,9 @@
 test.py
 /models
 push_to_hub.py
+
+/data_src/*.parquet
+/data_src/c4_aac.txt
+/.venv
+__pycache__/
+*.log

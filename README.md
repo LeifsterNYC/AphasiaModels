@@ -27,6 +27,48 @@ original: My parents wanted a daughter, so they raised me like one.
 
 ## Results
 
+### v3: flan-t5-large, everyday data (November 2026)
+
+The v2 model scored well on its own synthetic test set but failed on plain everyday
+phrases: it invented people ("wife visit tomorrow morning" → "Mark will visit his
+wife..."), turned statements into second-person questions, and mangled misplaced
+negation ("he go not work today" → "But he is going to not work today."). All three
+traced back to the training pairs, so v3 changes the data more than the model:
+
+- **Sources**: subtitles are now mixed with everyday conversational sentences —
+  a sample of the AAC-classified C4 set (Gaines & Vertanen, EMNLP 2025), Vertanen's
+  COMM2 set, and 9,000 templated first-person needs/pain/family sentences
+  (`everyday.py`). 186,892 pairs.
+- **Nothing unrecoverable is deleted**: "you/he/she/his/their", wh-words, names and
+  numbers are never dropped; only "I", "my" and expletives may go, so a subjectless
+  input always restores to the first person.
+- **Negation** is still never dropped, and is now sometimes misplaced
+  ("he go not work") or reduced to "no" so the model learns to move it back.
+- **Questions** keep a trailing `?` in the input.
+- **Inputs are canonicalised** (`normalize.py`: lowercase, no punctuation except a
+  final `?`) identically in training and serving.
+- **Model**: `google/flan-t5-large`, 2 epochs, checkpoint chosen by chrF; exported
+  to CTranslate2 int8 for CPU serving (`serve/app.py`, ~0.25 s per phrase on a
+  Ryzen 5700X). The server also rejects any beam that adds or removes a negation.
+
+Scores on `tasks/handset.tsv`, 80 hand-written phrases. 20 of the 80 references
+also occur among the templated training targets, so the 60 that do not are the
+fair comparison:
+
+| Model (as served)            | chrF (all 80) | chrF (60 unseen) | exact (60) | invents a person (60) |
+|------------------------------|---------------|------------------|------------|-----------------------|
+| v2 flan-t5-base              | 71.5          | 69.9             | 20.0%      | 31.7%                 |
+| **v3 flan-t5-large, int8**   | **86.3**      | **83.5**         | **43.3%**  | **0%**                |
+
+On its own held-out synthetic split (3,000 pairs) v3 scores chrF 79.4 / BLEU 61.4;
+that is not comparable with the v2 table below, which uses the v2 dataset.
+
+Known failures: bare two- or three-word inputs are ambiguous without context
+("book table"), "no can ..." is read as "No, I can ..." rather than "I cannot ...",
+and tense is a guess when the input has no time word.
+
+### v2 (June 2026)
+
 BLEU on a held-out test set of 4,850 synthetic disfluent pairs (split by hash of the
 target sentence, so no source sentence appears in both train and test):
 

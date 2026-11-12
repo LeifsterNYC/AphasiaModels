@@ -1,3 +1,4 @@
+import argparse
 import hashlib
 import json
 from datetime import datetime
@@ -13,12 +14,24 @@ from transformers import (
     Seq2SeqTrainingArguments,
 )
 
-MODEL_NAME = "google/flan-t5-base"
-PREFIX = "normalize in English: "
-MAX_LENGTH = 128
+from normalize import PREFIX
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--model", default="google/flan-t5-large")
+parser.add_argument("--epochs", type=float, default=3)
+parser.add_argument("--lr", type=float, default=1e-4)
+parser.add_argument("--batch", type=int, default=32)
+ARGS = parser.parse_args()
+
+MODEL_NAME = ARGS.model
+MAX_LENGTH = 96
+# Generating for the whole held-out split every epoch dominates training
+# time on the large model; a fixed subset is enough to pick a checkpoint.
+EVAL_SUBSET = 3000
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-metric = load("sacrebleu")
+bleu = load("sacrebleu")
+chrf = load("chrf")
 
 
 def load_data(path):
@@ -57,19 +70,20 @@ def compute_metrics(eval_pred):
     decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
-    result = metric.compute(
-        predictions=[pred.strip() for pred in decoded_preds],
-        references=[[label.strip()] for label in decoded_labels],
-    )
-    return {"bleu": result["score"]}
+    preds = [pred.strip() for pred in decoded_preds]
+    refs = [[label.strip()] for label in decoded_labels]
+    return {"bleu": bleu.compute(predictions=preds, references=refs)["score"],
+            "chrf": chrf.compute(predictions=preds, references=refs)["score"]}
 
 
 def main():
     dataset = load_data("aphasic_to_normal_synthetic.json")
     print({name: len(split) for name, split in dataset.items()})
     tokenized_dataset = dataset.map(preprocess_data, batched=True)
+    eval_dataset = tokenized_dataset["test"].shuffle(seed=0).select(
+        range(min(EVAL_SUBSET, len(tokenized_dataset["test"]))))
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    model_save_path = f"./models/model_{timestamp}"
+    model_save_path = f"./models/model_{timestamp}_{MODEL_NAME.split('/')[-1]}"
 
     model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
     data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model)
@@ -78,20 +92,20 @@ def main():
         output_dir=model_save_path,
         eval_strategy="epoch",
         save_strategy="epoch",
-        learning_rate=2e-4,
-        warmup_ratio=0.05,
-        per_device_train_batch_size=32,
+        learning_rate=ARGS.lr,
+        warmup_steps=0.05,  # a float below 1 is a ratio of total steps
+        per_device_train_batch_size=ARGS.batch,
         per_device_eval_batch_size=64,
         weight_decay=0.01,
         save_total_limit=2,
-        num_train_epochs=6,
+        num_train_epochs=ARGS.epochs,
         bf16=True,
         predict_with_generate=True,
         generation_max_length=MAX_LENGTH,
         load_best_model_at_end=True,
-        metric_for_best_model="bleu",
+        metric_for_best_model="chrf",
         greater_is_better=True,
-        logging_steps=100,
+        logging_steps=500,
         report_to=[],
         seed=42,
     )
@@ -100,7 +114,7 @@ def main():
         model=model,
         args=training_args,
         train_dataset=tokenized_dataset["train"],
-        eval_dataset=tokenized_dataset["test"],
+        eval_dataset=eval_dataset,
         processing_class=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
@@ -113,6 +127,7 @@ def main():
 
     final_path = f"{model_save_path}/final"
     trainer.save_model(final_path)
+    tokenizer.save_pretrained(final_path)
     print(f"Saved best model to {final_path}")
 
 
